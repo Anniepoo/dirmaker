@@ -1,4 +1,4 @@
-#!/usr/bin/swipl -q -t main -f
+#!/usr/local/bin/swipl -s dirmaker.pl -g go
 :- module(dirmaker, []).
 
 
@@ -7,7 +7,7 @@ dirmaker_opts(
         [   opt(nofiles),
 	    type(boolean),
 	    default(false),
-            shortflags([nf]),
+            shortflags([n]),
 	    longflags(['nofiles']),
             help('Don\'t create files')],
 
@@ -22,18 +22,21 @@ dirmaker_opts(
 % TODO replace this with optparse
 do_dirmaker(_) :-
 	dirmaker_opts(OptSpec),
-	opt_arguments(OptSpec, Opts, [Infile, BaseDir]),
-	do_dirmaker_helper(Opts, Infile, BaseDir).
+	opt_arguments(OptSpec, Opts, [_, Infile, BaseDir]),
+	working_directory(WD, WD),
+	absolute_file_name(BaseDir, AbsBaseDir),
+	do_dirmaker_helper(Opts, Infile, AbsBaseDir).
 do_dirmaker(_) :-
 	dirmaker_opts(OptSpec),
 	opt_help(OptSpec, Help),
-	format(user_error, '~w~n', [Help]).
+	format(user_error, 'Usage: swipl -s dirmaker.pl -g go -- <options> <infile> <basedir>~nOptions:~n~w~n', [Help]).
 
 do_dirmaker_helper(Options, Infile, BaseDir) :-
-	member(nf(true), Options),!,
+	member(nofiles(true), Options),!,
 	dirmaker(notouch, Infile, BaseDir).
 do_dirmaker_helper(Options, Infile, BaseDir) :-
 	member(files(Exemplars), Options),
+	ground(Exemplars),
 	dirmaker(exemplar(Exemplars), Infile, BaseDir).
 do_dirmaker_helper(_, Infile, BaseDir) :-
 	dirmaker(touch, Infile, BaseDir).
@@ -56,30 +59,55 @@ dirmaker(FileGoal, Infile, BaseDir) :-
 next_line(FileGoal, BaseDir) :-
 	current_input(S),
 	read_line_to_codes(S, Codes),
+	string_codes(String, Codes),
 	!, % make debugging much easier
-	process_line(Codes, FileGoal, BaseDir).
+	process_line(String, FileGoal, BaseDir).
+
+
+concat_file_path(Rel, Base, Abs) :-
+	string_concat(_, "/", Base),
+	cchelper(Rel, Base, Abs).
+concat_file_path(Rel, Base, Abs) :-
+	string_concat(Base, "/", BBase),
+	cchelper(Rel, BBase, Abs).
+
+cchelper(Rel, Base, Abs) :-
+	string_concat("./", Rest, Rel),
+	string_concat(Base, Rest, Abs).
+cchelper(Rel, Base, Abs) :-
+	string_concat("/", Rest, Rel),
+	string_concat(Base, Rest, Abs).
+cchelper(Rel, Base, Abs) :-
+	string_concat(Base, Rel, Abs).
 
 process_line(end_of_file, _, _).
-process_line(Line, FileGoal, BaseDir) :-
-	append(Dir, ":", Line),
-	working_directory(_, Dir),
+process_line(".:", FileGoal, BaseDir) :-
+	working_directory(_, BaseDir),
 	next_line(FileGoal, BaseDir).
 process_line(Line, FileGoal, BaseDir) :-
-	append(_, "/", Line),
+	string_concat(Dir, ":", Line),
+	concat_file_path(Dir , BaseDir , Abs),
+	working_directory(_, Abs),
+	next_line(FileGoal, BaseDir).
+process_line(Line, FileGoal, BaseDir) :-
+	string_concat(_, "/", Line),
 	working_directory(WD, WD),
-	absolute_file_name(Line, Abs, [relative_to(WD)]),
+	concat_file_path(Line, WD, Abs),
 	force_exists_dir(Abs),
 	next_line(FileGoal, BaseDir).
 process_line(Line, FileGoal, BaseDir) :-
-	append(File, "@", Line),
+	string_concat(File, "@", Line),
 	call(FileGoal, File),
 	next_line(FileGoal, BaseDir).
 process_line(Line, FileGoal, BaseDir) :-
-	append(File, "*", Line),
+	string_concat(File, "*", Line),
 	call(FileGoal, File),
 	next_line(FileGoal, BaseDir).
 process_line(Line, FileGoal, BaseDir) :-
-	maplist(iswhite, Line),
+	string_codes(Line, CLine),
+	maplist(iswhite, CLine),
+	next_line(FileGoal, BaseDir).
+process_line("", FileGoal, BaseDir) :-
 	next_line(FileGoal, BaseDir).
 process_line(Line, FileGoal, BaseDir) :-
 	call(FileGoal, Line),
@@ -91,8 +119,8 @@ force_exists_dir(Abs) :-
 	exists_directory(Abs),
 	!.
 force_exists_dir(Abs) :-
-	file_directory_name(Abs, Dir),
-	make_directory(Dir).
+	format('making ~w~n', [Abs]),
+	make_directory(Abs).
 
 exemplar(Dir, File) :-
 	file_name_extension(_, Ext, File),
@@ -101,38 +129,18 @@ exemplar(Dir, File) :-
 	atom_concat(Dir, AFile, APath),
 	absolute_file_name(File, NewPath),
 	link_file(APath, NewPath, symbolic).
+exemplar(_, File) :-
+	touch(File).
 touch(File)  :-
+	format('touching ~w~n', [File]),
 	open(File, write, Stream),
+	format(Stream, 'x~n', []),
 	close(Stream).
 notouch(_).
 
-:- style_check(-atom).
-user:main(Argv) :-
-        catch(do_dirmaker(Argv), E, (print_message(error, E), fail)),
-        halt.
-user:main(_) :-
-	writeln('Usage:'),
-	writeln("dirmaker <options> <infile> <basedir>\
-\
-There are only two options\
-\
-   -f  <dir>\
-   or\
-   --files  <dir>\
-   on encountering a non-directory file in the ls, look for a file with similar extension,\
-   or, if the file has no extension, the same name, in <dir> and symlink that file.\
-   if -f is omitted a length zero file will be created (a la \'touch\')\
-\
-   -nf\
-   or\
-   --nofiles\
-   Don't create any files/symlinks (overrides -f)\
-\
-examples:\
-dirmaker.pl /path/to/myfile  /path/to/dir\
-\
-dirmaker -f /path/for/exemplars  /path/to/myfile  /path/to/dir"),
-        halt(1).
-:- style_check(+atom).
+user:go :-
+        catch(do_dirmaker([]), E, (print_message(error, E), fail)).
+
+
 
 
